@@ -1,0 +1,114 @@
+/* final_frontend/src/index.css */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 以下是 Meraki UI 範本自訂 override */
+body {
+  font-family: "Inter", sans-serif;
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+/* …其他範本裡的 app.css 或 style.css 內容… */
+:root {
+  font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+
+  color-scheme: light dark;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  --bg-color: #e9e8e3;         /* 米白背景 */
+  --text-color: #41774c;       /* 深綠字體 */
+  --accent-color: #c9403e;     /* 黃 */
+  --accent-hover: #a63533e6;     /* 橘 */
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color: rgba(255, 255, 255, 0.87);
+    background-color: #242424;
+  }
+}
+
+.navbar-bar {
+  background-color: #b75151 !important;
+}
+
+a {
+  font-weight: 500;
+  color: inherit;
+  text-decoration: inherit;
+}
+a:hover {
+  color: var(--accent-hover);
+}
+
+h1 {
+  line-height: 1.1;
+}
+
+button {
+  border-radius: 8px;
+  border: 1px solid transparent;
+  padding: 0.6em 1.2em;
+  font-size: 1em;
+  font-weight: 500;
+  font-family: inherit;
+  background-color: #1a1a1a;
+  cursor: pointer;
+  transition: border-color 0.25s;
+}
+button:hover {
+  border-color: #386641;
+}
+button:focus,
+
+button:focus-visible {
+  outline: 4px auto -webkit-focus-ring-color;
+}
+
+
+
+/* === Custom Theme Variables and Overrides === */
+
+body {
+  background-color: var(--bg-color);
+  color: var(--text-color);
+}
+
+.btn-primary {
+  background-color: var(--accent-color);
+  color: white;
+  font-weight: 600;
+  padding: 0.5rem 1rem;
+  border-radius: 0.5rem;
+  transition: background-color 0.3s ease;
+}
+
+.btn-primary:hover {
+  background-color: var(--accent-hover);
+}
+
+.card {
+  background-color: white;
+  border-radius: 1rem;
+  box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+  padding: 2rem;
+}
+
+.form-label {
+  font-weight: bold;
+  margin-bottom: 0.25rem;
+  display: block;
+}
+
+header, footer {
+  background-color: #386641;
+  color: white;
+  padding: 1rem;
+}

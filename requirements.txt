@@ -1,0 +1,9 @@
+openai-whisper
+fastapi
+uvicorn
+notion-client
+jieba
+python-dotenv
+requests
+flask
+opencc-python-reimplemented

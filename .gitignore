@@ -1,0 +1,10 @@
+.env
+__pycache__/
+node_modules/
+venv/
+.DS_Store
+*.pyc
+# 忽略大檔案
+data/
+courses-dashboard-template/
+venv/

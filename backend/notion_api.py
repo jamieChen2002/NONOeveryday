@@ -80,6 +80,45 @@ def get_data_for_month(month_str: str):
     print(f"🔎 篩選到 {month_str} 的資料筆數：{len(results)}")
     return results
 
+
+# 取得某月所有資料（自動分頁，保證拿到所有資料）
+def get_data_for_month_all(month_str: str):
+    from datetime import timedelta
+
+    # Define the first day of the month in ISO format
+    start = f"{month_str}-01T00:00:00.000Z"
+    
+    # Compute the first day of the next month
+    month_dt = datetime.strptime(month_str, "%Y-%m")
+    if month_dt.month == 12:
+        next_month = month_dt.replace(year=month_dt.year + 1, month=1)
+    else:
+        next_month = month_dt.replace(month=month_dt.month + 1)
+    end = next_month.strftime("%Y-%m-%dT00:00:00.000Z")
+
+    print(f"🔎 get_data_for_month_all: start={start}, end={end}")
+
+    all_results = []
+    has_more = True
+    start_cursor = None
+    while has_more:
+        query_payload = {
+            "database_id": DATABASE_ID,
+            "filter": {
+                "property": "日期",
+                "date": {"on_or_after": start, "before": end}
+            },
+            "page_size": 100
+        }
+        if start_cursor:
+            query_payload["start_cursor"] = start_cursor
+        response = notion.databases.query(**query_payload)
+        all_results.extend(response.get("results", []))
+        has_more = response.get("has_more", False)
+        start_cursor = response.get("next_cursor", None)
+    print(f"🔎 全部取得 {month_str} 的資料筆數：{len(all_results)}")
+    return all_results
+
 def get_prev_month(month_str: str):
     date = datetime.strptime(month_str + "-01", "%Y-%m-%d")
     if date.month == 1:
@@ -87,3 +126,11 @@ def get_prev_month(month_str: str):
     else:
         prev = date.replace(month=date.month - 1)
     return prev.strftime("%Y-%m")
+if __name__ == "__main__":
+    database_id = os.getenv("NOTION_DATABASE_ID")
+    from pprint import pprint
+    notion = Client(auth=os.getenv("NOTION_API_KEY"))
+    db = notion.databases.retrieve(database_id=database_id)
+    print("【Notion 資料庫欄位（Property）列表】")
+    for key, prop in db["properties"].items():
+        print(f"- {key}：{prop['type']}")

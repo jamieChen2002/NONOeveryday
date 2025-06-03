@@ -3,6 +3,7 @@ from opencc import OpenCC  # 改用 opencc-python-reimplemented 提供的同名�
 cc = OpenCC('s2t')  # 簡體轉繁體
 
 import google.generativeai as genai
+
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 def gemini_summarize_text(text):
@@ -21,21 +22,6 @@ def gemini_summarize_text(text):
     except Exception as e:
         print("🧨 Gemini 摘要過程發生錯誤：", e)
         return "AI 摘要失敗，請檢查資料格式或內容。"
-
-def classify_text(text):
-    """根據關鍵字分類農務紀錄"""
-    if not isinstance(text, str):
-        text = str(text)
-    if "灑藥" in text or "農藥" in text:
-        return "病蟲害"
-    elif "施肥" in text:
-        return "施肥"
-    elif "巡田" in text:
-        return "巡田"
-    elif "澆水" in text:
-        return "澆水"
-    else:
-        return "其他"
 
 def extract_rich_text(page, field):
     arr = page.get("properties", {}).get(field, {}).get("rich_text", [])

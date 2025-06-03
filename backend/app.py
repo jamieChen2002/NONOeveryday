@@ -1,33 +1,65 @@
-from fastapi import FastAPI
-app = FastAPI()
-from fastapi import UploadFile, File
+from fastapi import FastAPI, UploadFile, File, Form
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 import whisper
 import tempfile
 import os
-import requests
-from write_notion import write_to_notion
+from dotenv import load_dotenv
 from notion_client import Client
 from datetime import datetime
+from collections import Counter, defaultdict
+import json
 
-from dotenv import load_dotenv
+import google.generativeai as genai
+from notion_client import Client as NotionClient
+from datetime import date, timedelta, datetime
+
+# Initialize Gemini API client
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+notion = NotionClient(auth=os.getenv("NOTION_API_KEY"))
+DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
+
+from write_notion import write_to_notion
+from notion_api import get_data_for_month, get_prev_month
+from gpt_summary import generate_insights
+
 load_dotenv()
+BRAVE_API_KEY = os.getenv("BRAVE_API_KEY")
 print("🔍 (app.py) NOTION_API_KEY:", os.getenv("NOTION_API_KEY"))
 print("🔍 (app.py) DATABASE_ID:", os.getenv("NOTION_DATABASE_ID"))
 
-# 新增印出 DATABASE_ID 變數
 notion = Client(auth=os.getenv("NOTION_API_KEY"))
 DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
 print("🔍 (app.py) DATABASE_ID (變數):", DATABASE_ID)
 
-from fastapi import FastAPI, Form
-from fastapi.middleware.cors import CORSMiddleware
-
-from pydantic import BaseModel
-
-class SaveRequest(BaseModel):
-    content: str
+def get_all_pages_for_month(month_str):
+    """一次撈回當月所有 Notion 頁面（自動分頁）。"""
+    year, month = parse_month_str(month_str)
+    start = date(year, month, 1)
+    end = (start + timedelta(days=32)).replace(day=1)
+    all_results = []
+    start_cursor = None
+    while True:
+        query = {
+            "database_id": DATABASE_ID,
+            "filter": {
+                "property": "日期",
+                "date": {"on_or_after": start.isoformat(), "before": end.isoformat()}
+            },
+            "page_size": 100,
+            "sorts": [{"property": "日期", "direction": "ascending"}]
+        }
+        if start_cursor:
+            query["start_cursor"] = start_cursor
+        resp = notion.databases.query(**query)
+        all_results.extend(resp.get("results", []))
+        if not resp.get("has_more"):
+            break
+        start_cursor = resp.get("next_cursor")
+    return all_results
 
 app = FastAPI()
+
 origins = ["http://localhost:5173"]
 app.add_middleware(
     CORSMiddleware,
@@ -36,6 +68,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+def parse_month_str(month_str):
+    dt = datetime.strptime(month_str, "%Y-%m")
+    return dt.year, dt.month
+
+class SaveRequest(BaseModel):
+    content: str
 
 @app.get("/")
 def read_root():
@@ -60,7 +99,6 @@ def handle_diary(
     income_estimate: float = Form(0),
 ):
     print("📥 收到的資料：", env, action, date)
-    print("📊 DEBUG: env =", env)
     data = {
         "env": env,
         "action": action,
@@ -78,9 +116,6 @@ def handle_diary(
         "cost_amount": cost_amount,
         "income_estimate": income_estimate
     }
-    print("📦 寫入 Notion 的資料：", data)
-    print("📦 寫入 Notion 的資料內容（完整）：", data)
-   
     try:
         notion_url = write_to_notion(data)
         return {"notion_url": notion_url}
@@ -88,20 +123,15 @@ def handle_diary(
         print("❌ Notion 寫入失敗：", e)
         return {"error": str(e)}
 
-
-# 新增 /save endpoint
 @app.post("/save")
 def save_content(req: SaveRequest):
     try:
-        # You can wrap the content into a dictionary or pass directly if your write_to_notion supports it
         notion_url = write_to_notion(req.content)
         return {"notion_url": notion_url}
     except Exception as e:
         print("❌ Notion 寫入失敗：", e)
         return {"error": str(e)}
 
-
-# Whisper 語音轉文字 API
 @app.post("/transcribe")
 def transcribe_audio(audio: UploadFile = File(...)):
     try:
@@ -115,22 +145,11 @@ def transcribe_audio(audio: UploadFile = File(...)):
     except Exception as e:
         return {"error": str(e)}
 
-
-def fetch_diary_records():
-    try:
-        response = notion.databases.query(database_id=DATABASE_ID)
-        print("📥 Notion 回傳資料：", response)
-        return response["results"]
-    except Exception as e:
-        print("❌ 讀取 Notion 資料庫失敗：", e)
-        return []
-
 def simplify_record(page):
     try:
         props = page.get("properties", {})
         abnormal = props.get("異常狀態", {}).get("rich_text", [])
         abnormal_text = abnormal[0]["text"]["content"] if abnormal and abnormal[0].get("text") else ""
-        pest_keywords = ["灰黴病", "炭疽病", "白粉病", "萎凋病", "斑點病", "紅蜘蛛", "蚜蟲", "介殼蟲", "枯萎", "蟲", "病", "異常"]
         ignore_keywords = ["無", "正常", "無異常", "健康", "ok", "沒有", "尚可"]
         detail = []
         if abnormal_text.strip() and abnormal_text.strip().lower() not in ignore_keywords:
@@ -144,17 +163,11 @@ def simplify_record(page):
         income_detail_text = income_detail_raw[0]["text"]["content"] if income_detail_raw and income_detail_raw[0].get("text") else ""
         income_detail_list = [item.strip() for item in income_detail_text.split(",") if item.strip()]
 
-        # 日期防呆
         date_val = None
         if "日期" in props and "date" in props["日期"] and props["日期"]["date"]:
             date_val = props["日期"]["date"].get("start")
-        # 金額防呆
-        cost_val = props.get("成本備註", {}).get("number")
-        if cost_val is None:
-            cost_val = 0
-        income_val = props.get("收入概估", {}).get("number")
-        if income_val is None:
-            income_val = 0
+        cost_val = props.get("成本備註", {}).get("number") or 0
+        income_val = props.get("收入概估", {}).get("number") or 0
 
         record = {
             "date": date_val,
@@ -167,19 +180,145 @@ def simplify_record(page):
             "cost_detail": cost_detail_list,
             "income_detail": income_detail_list
         }
-        print("📘 轉換後記錄：", record)
         return record
     except Exception as e:
         print("❌ simplify_record 解析失敗，異常原因：", e)
-        # 強制回傳一筆空記錄，避免 crash
         return {
             "date": None, "cost": 0, "income": 0, "pest": False,
             "pest_detail": [], "category": "", "abnormal": "",
             "cost_detail": [], "income_detail": []
         }
 
-from notion_api import get_data_for_month, get_prev_month
-from gpt_summary import generate_insights
+# --- Dashboard Helper Functions ---
+def fetch_monthly_stats(month_str):
+    results = get_all_pages_for_month(month_str)
+    total_income = 0
+    total_cost = 0
+    pest_count = 0
+    for page in results:
+        props = page["properties"]
+        income = props.get("收入概估", {}).get("number") or 0
+        cost   = props.get("成本備註", {}).get("number") or 0
+        anomaly = props.get("異常狀態", {}).get("rich_text") or []
+        total_income += income
+        total_cost   += cost
+        if anomaly and any(r["plain_text"].strip() for r in anomaly):
+            pest_count += 1
+    return {"income": total_income, "cost": total_cost, "pest": pest_count}
+
+def calc_pct_change(curr: int, prev: int):
+    if prev == 0:
+        return None
+    return round((curr - prev) / prev * 100, 1)
+
+def get_three_indicators(month_str):
+    year, month = parse_month_str(month_str)
+    curr = fetch_monthly_stats(month_str)
+    # 計算上個月
+    if month == 1:
+        prev_year, prev_month = year - 1, 12
+    else:
+        prev_year, prev_month = year, month - 1
+    prev_month_str = f"{prev_year}-{str(prev_month).zfill(2)}"
+    prev = fetch_monthly_stats(prev_month_str)
+    return {
+        "income": {
+            "value": curr["income"],
+            "pct": calc_pct_change(curr["income"], prev["income"])
+        },
+        "cost": {
+            "value": curr["cost"],
+            "pct": calc_pct_change(curr["cost"], prev["cost"])
+        },
+        "pest": {
+            "value": curr["pest"],
+            "pct": calc_pct_change(curr["pest"], prev["pest"])
+        }
+    }
+
+def fetch_daily_costs(month_str):
+    year, month = parse_month_str(month_str)
+    start = date(year, month, 1)
+    end = (start + timedelta(days=32)).replace(day=1)
+    daily_costs = []
+    d = start
+    while d < end:
+        results = get_all_pages_for_month(month_str)
+        day_cost = sum(
+            page["properties"].get("成本備註", {}).get("number", 0) for page in results
+            if page["properties"]["日期"]["date"] and page["properties"]["日期"]["date"]["start"][:10] == d.isoformat()
+        )
+        daily_costs.append(day_cost)
+        d += timedelta(days=1)
+    return daily_costs
+
+def check_alerts(month_str):
+    indicators = get_three_indicators(month_str)
+    pest_pct = indicators["pest"]["pct"]
+    alerts = []
+    if pest_pct is not None and pest_pct > 50:
+        alerts.append(f"病蟲害筆數較上月增加 {pest_pct}%，請注意防治。")
+
+    daily_costs = fetch_daily_costs(month_str)
+    if daily_costs:
+        avg = sum(daily_costs) / len(daily_costs)
+        for idx, c in enumerate(daily_costs, start=1):
+            if c > avg * 2:
+                alerts.append(f"{month_str} 第 {idx} 天單日成本 {c} 元，遠高於平均 {avg:.1f} 元。")
+                break
+
+    results = get_all_pages_for_month(month_str)
+    year, month = parse_month_str(month_str)
+    start = date(year, month, 1)
+    end = (start + timedelta(days=32)).replace(day=1)
+    dates_with_records = {page["properties"]["日期"]["date"]["start"][:10] for page in results if page["properties"]["日期"]["date"]}
+    missing_streak = 0
+    d = start
+    while d < end:
+        if d.isoformat() not in dates_with_records:
+            missing_streak += 1
+            if missing_streak >= 3:
+                alerts.append(f"{month_str} 有連續 3 天以上無日誌記錄。")
+                break
+        else:
+            missing_streak = 0
+        d += timedelta(days=1)
+
+    return alerts
+
+def build_summary_prompt(month_str):
+    stats = fetch_monthly_stats(month_str)
+    alert_msgs = check_alerts(month_str)
+    year, month = parse_month_str(month_str)
+    prompt = f"""
+請依下列農務月度重點，以繁體中文撰寫段落式摘要，包含整體營收/成本概況、病蟲害情況、天氣影響及建議：
+• 年月：{year} 年 {month} 月
+• 總收入：{stats['income']} 元
+• 總成本：{stats['cost']} 元
+• 病蟲害筆數：{stats['pest']} 次
+• 主要異常警示：{"；".join(alert_msgs) if alert_msgs else "無"}
+• 其他簡要說明：本月天氣偏多雨，土壤排水不良；花期為 {year}/{month}/15 ~ {year}/{month}/20
+"""
+    return prompt.strip()
+
+def generate_monthly_summary(month_str):
+    # 先取得該月的統計數字
+    stats = fetch_monthly_stats(month_str)
+    try:
+        # 嘗試呼叫 Gemini 生成摘要
+        prompt = build_summary_prompt(month_str)
+        response = genai.chat.create(
+            model="models/text-bison-001",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2
+        )
+        return response["candidates"][0]["content"]
+    except Exception:
+        # 若 AI 產生失敗，就回傳最基本的 fallback 文字
+        income = stats.get("income", 0)
+        cost = stats.get("cost", 0)
+        pest = stats.get("pest", 0)
+        return f"本月總收入：{income} 元；總成本：{cost} 元；病蟲害筆數：{pest} 次。"
 
 @app.get("/api/dashboard")
 def get_dashboard(month: str = None):
@@ -187,36 +326,25 @@ def get_dashboard(month: str = None):
         month = datetime.now().strftime("%Y-%m")
     prev_month = get_prev_month(month)
 
-    print("✅ 月份查詢：", month)
-    pages = get_data_for_month(month)
-    print("✅ 本月資料頁面數量：", len(pages))
-    print("📄 頁面範例（第 1 筆）：", pages[0] if pages else "無資料")
-    prev_pages = get_data_for_month(prev_month)
-    print("✅ 上月資料頁面數量：", len(prev_pages))
-
-    import json
+    pages = get_all_pages_for_month(month)
+    prev_pages = get_all_pages_for_month(prev_month)
 
     records = []
-    for i, p in enumerate(pages):
-        try:
-            record = simplify_record(p)
-            records.append(record)
-        except Exception as e:
-            print(f"❌ 第 {i+1} 筆資料處理錯誤：", e)
-            print("🔍 問題頁面內容：", json.dumps(p, ensure_ascii=False, indent=2))
+    for p in pages:
+        record = simplify_record(p)
+        records.append(record)
 
     total_cost = sum(r["cost"] for r in records)
     total_income = sum(r["income"] for r in records)
     pest_count = sum(1 for r in records if r["pest"])
     record_count = len(records)
 
-    from collections import Counter, defaultdict
-
     detail_counter = Counter()
     category_counter = Counter()
     cost_detail_counter = Counter()
     income_detail_counter = Counter()
     category_money = defaultdict(float)
+    income_money = defaultdict(float)
     daily_record_counter = defaultdict(int)
     daily_pest_counter = defaultdict(int)
 
@@ -232,16 +360,21 @@ def get_dashboard(month: str = None):
             share = amount / len(categories)
             for c in categories:
                 category_money[c] += share
+        # 收入拆標籤分配金額
+        incomes = r.get("income_detail", [])
+        income_amount = r.get("income", 0)
+        if incomes:
+            share_i = income_amount / len(incomes)
+            for inc in incomes:
+                income_money[inc] += share_i
         if r["date"]:
             daily_record_counter[r["date"]] += 1
             if r["pest"]:
                 daily_pest_counter[r["date"]] += 1
 
     try:
-        print("🧠 本月摘要產生中...")
-        summary_this = generate_insights(pages)
-        print("🧠 上月摘要產生中...")
-        summary_prev = generate_insights(prev_pages)
+        summary_this = generate_monthly_summary(month)
+        summary_prev = generate_monthly_summary(prev_month)
         ai_summary = {
             month: summary_this,
             prev_month: summary_prev
@@ -249,32 +382,9 @@ def get_dashboard(month: str = None):
     except Exception as e:
         print("🧨 AI 摘要產生失敗：", e)
         ai_summary = {
-            month: "AI 摘要產生錯誤",
-            prev_month: "AI 摘要產生錯誤"
+            month: "AI 摘要失敗，請檢查資料格式或內容。",
+            prev_month: "AI 摘要失敗，請檢查資料格式或內容。"
         }
-
-    print("🔢 成本總和：", total_cost)
-    print("🔢 收入總和：", total_income)
-
-    import json
-    try:
-        print("🟡 測試 json.dumps 輸出")
-        print(json.dumps({
-            "total_cost": total_cost,
-            "total_income": total_income,
-            "pest_count": pest_count,
-            "record_count": record_count,
-            "pest_detail": [{"name": k, "value": v} for k, v in detail_counter.items()],
-            "category_detail": [{"name": k, "value": v} for k, v in category_counter.items()],
-            "cost_detail": [{"name": k, "value": v} for k, v in cost_detail_counter.items()],
-            "income_detail": [{"name": k, "value": v} for k, v in income_detail_counter.items()],
-            "cost_money_detail": [{"name": k, "value": round(v, 1)} for k, v in category_money.items()],
-            "daily_counts": [{"date": k, "count": v} for k, v in sorted(daily_record_counter.items())],
-            "daily_pest_counts": [{"date": k, "count": v} for k, v in sorted(daily_pest_counter.items())],
-            "ai_summary": ai_summary
-        }, ensure_ascii=False))
-    except Exception as e:
-        print("🛑 json.dumps 爆炸：", e)
 
     return {
         "total_cost": total_cost,
@@ -286,10 +396,93 @@ def get_dashboard(month: str = None):
         "cost_detail": [{"name": k, "value": v} for k, v in cost_detail_counter.items()],
         "income_detail": [{"name": k, "value": v} for k, v in income_detail_counter.items()],
         "cost_money_detail": [{"name": k, "value": round(v, 1)} for k, v in category_money.items()],
+        "income_money_detail": [{"name": k, "value": round(v, 1)} for k, v in income_money.items()],
         "daily_counts": [{"date": k, "count": v} for k, v in sorted(daily_record_counter.items())],
         "daily_pest_counts": [{"date": k, "count": v} for k, v in sorted(daily_pest_counter.items())],
-        "ai_summary": ai_summary
+        "ai_summary": ai_summary,
+        "summary": ai_summary.get(month, "")
     }
+
+# --- Dashboard Indicator/Alerts/Summary Endpoints ---
+@app.get("/api/dashboard/indicators")
+def api_three_indicators(month: str = None):
+    if not month:
+        month = datetime.now().strftime("%Y-%m")
+    # 先取三大指標
+    indicators = get_three_indicators(month)
+    # 再取 Dashboard 所有統計明細（cost_detail、income_detail、cost_money_detail、pest_detail、daily_counts、daily_pest_counts）
+    dashboard = get_dashboard(month)
+    # 將三大指標併入 dashboard 結果中
+    result = dict(dashboard)
+    result["indicators"] = indicators
+    return result
+
+@app.get("/api/dashboard/alerts")
+def api_alerts(month: str = None):
+    if not month:
+        month = datetime.now().strftime("%Y-%m")
+    return {"alerts": check_alerts(month)}
+
+@app.get("/api/dashboard/summary")
+def api_summary(month: str = None):
+    if not month:
+        month = datetime.now().strftime("%Y-%m")
+    return {"summary": generate_monthly_summary(month)}
+
+# --- Pest Advice Route ---
+from fastapi import Query
+import requests
+
+@app.get("/api/pest_advice")
+def get_pest_advice(pests: str = Query(..., description="以逗號或頓號分隔的病蟲害名稱")):
+    """
+    接收前端傳來的 pests 字串，例如 "白粉病,灰黴病,葉斑病"。將其拆分成 list，
+    再依序對每個病蟲害名稱呼叫 Brave Search API 取得防治建議。
+    """
+    from collections import Counter
+
+    # 印出 debug 訊息，確認後端收到的參數
+    print(f"[DEBUG] Received pests parameter: {pests}")
+
+    # 將頓號替換成逗號，並拆分成清單，忽略空字串
+    raw_list = [s.strip() for s in pests.replace("、", ",").split(",") if s.strip()]
+    if not raw_list:
+        return {"results": []}
+
+    all_results = []
+    for pest_name in raw_list:
+        # 若名稱開頭有「草莓」，先去除，避免重複
+        search_target = pest_name
+        if search_target.startswith("草莓"):
+            search_target = search_target.replace("草莓", "", 1).strip()
+
+        # 每個病蟲害名稱都去呼叫 Brave Search API 搜尋前 3 筆結果
+        headers = {
+            "Accept": "application/json",
+            "X-Subscription-Token": BRAVE_API_KEY,
+        }
+        query_text = f"草莓 {search_target} 防治 建議"
+        params = {"q": query_text, "count": 3}
+        try:
+            response = requests.get(
+                "https://api.search.brave.com/res/v1/web/search",
+                headers=headers,
+                params=params,
+                timeout=5000
+            )
+            if response.status_code == 200:
+                data = response.json()
+                for item in data.get("web", {}).get("results", []):
+                    all_results.append({
+                        "pest": pest_name,
+                        "title": item.get("title", ""),
+                        "url": item.get("url", ""),
+                        "description": item.get("description", "")
+                    })
+        except Exception as e:
+            print(f"[WARN] Brave API error for '{pest_name}': {e}")
+
+    return {"results": all_results}
 
 if __name__ == "__main__":
     import uvicorn

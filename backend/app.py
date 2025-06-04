@@ -139,7 +139,10 @@ def transcribe_audio(audio: UploadFile = File(...)):
             tmp.write(audio.file.read())
             tmp_path = tmp.name
 
-        model = whisper.load_model("base", download_root="/tmp")
+        import os
+        WHISPER_CACHE = "/tmp/whisper-cache"
+        os.makedirs(WHISPER_CACHE, exist_ok=True)
+        model = whisper.load_model("base", download_root=WHISPER_CACHE)
         result = model.transcribe(tmp_path, language="zh")
         return {"text": result["text"]}
     except Exception as e:

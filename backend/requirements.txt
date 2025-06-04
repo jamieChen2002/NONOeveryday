@@ -1,0 +1,11 @@
+openai-whisper
+fastapi
+uvicorn
+notion-client
+jieba
+python-dotenv
+requests
+flask
+opencc-python-reimplemented
+google-generativeai>=0.8.5
+python-multipart

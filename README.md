@@ -1,7 +1,7 @@
 # NONOeveryday
 
-## NONO – Smallholder Farmer Voice Logging Tool 
-## May 2025 ｜ [Prototype / PoC]
+#### NONO – Smallholder Farmer Voice Logging Tool 
+#### May 2025 ｜ [Prototype / PoC]
 #### • 
 Independent project addressing smallholder farmers’ pain points: limited budget, manpower shortage, fragmented records, and reliance on social platforms.
 #### • 
